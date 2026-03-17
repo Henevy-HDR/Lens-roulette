@@ -224,7 +224,7 @@ const COLLECTION = new LensCollection([
     rarity: 3,                 outdoor: true,
     character: "Punchy micro-contrast, sharp centre, vintage character",
     tip: "East German precision. Get close, fill the frame. Made for tight street and environmental shots.",
-    subjects: ["street", "landscape", "nature"],
+    subjects: ["street", "landscape", "nature","macro"],
     moods:    ["clinical"],
     light:    ["bright sun", "any"],
     weather:  ["sunny", "cloudy"],
@@ -283,7 +283,7 @@ const COLLECTION = new LensCollection([
   }),
 
   new Lens({
-    shortName: "TELE   135",   name: "Automatic Telephoto 135mm f/2.8",
+    shortName: "Meyer-Optik-Görlitz 135",   name: "Automatic Telephoto 135mm f/2.8",
     aperture: "f/2.8",         type: "Tele Prime",
     origin: "Japanese",        era: "1970s",
     rarity: 2,                 outdoor: true,
