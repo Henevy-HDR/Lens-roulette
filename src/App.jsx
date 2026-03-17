@@ -150,7 +150,7 @@ class ScoringEngine {
         s += Math.max(W.astroPenalty, W.astroFast - stops * W.astroStep);
       } else if (lk.includes("low light")) {
         if (lens.maxAperture <= 1.8) s += W.lowLightFast;
-        if (lens.maxAperture <= 2.2) s += W.lowLightMid;
+        if (lens.maxAperture <= 2.8) s += W.lowLightMid;
       } else {
         if (lens.matchesLight(lk)) s += W.lightGeneral;
       }
