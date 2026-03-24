@@ -1,4 +1,4 @@
-# 🎞 Lens Roulette
+# Lens Roulette
 
 A vintage glass selector for the Canon EOS M50 — guided by shooting conditions, spiced with randomness.
 
@@ -46,7 +46,7 @@ git push -u origin main
 ```
 
 Then go to https://vercel.com → **Add New Project** → import the repo → **Deploy**.  
-Every `git push` auto-deploys. ✅
+Every `git push` auto-deploys. 
 
 ---
 
