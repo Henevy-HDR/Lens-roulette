@@ -1,407 +1,21 @@
 import { useState, useRef } from "react";
+import { LensCollection, ScoringEngine, OPTIONS as ENGINE_OPTIONS } from "./engine";
+import { LENS_DATA } from "./data/lenses";
 
-// ════════════════════════════════════════════════════════════════════
-//  LENS CLASS
-//  One instance = one physical lens in your bag.
-//  All tag-matching logic lives here so ScoringEngine stays clean.
-//
-//  HOW TO ADD A LENS — copy this template and push to COLLECTION:
-//
-//  new Lens({
-//    shortName: "LABEL  XX",        // ≤12 chars, shown on slot reel
-//    name:      "Full Lens Name",
-//    aperture:  "f/1.8",            // max (widest) aperture
-//    type:      "Prime",            // Prime | Zoom | Macro | Cine Prime | Tele Prime | Tele Zoom
-//    origin:    "Japanese",         // Japanese | Soviet | East German | Third Party
-//    era:       "1970s",
-//    rarity:    3,                  // 1 (common) – 5 (museum piece)
-//    outdoor:   true,               // false = mainly indoor lens
-//    character: "One-line optical personality",
-//    tip:       "Shooting advice shown on the result card.",
-//    subjects:  ["street","landscape"],  // any lowercase words — new ones auto-appear as pills
-//    moods:     ["warm"],                // warm | clinical | cinematic | lofi
-//    light:     ["any"],                 // any | bright sun | golden hour | low light | night
-//    weather:   ["any"],                 // any | sunny | cloudy | rain | fog
-//  }),
-// ════════════════════════════════════════════════════════════════════
-const KNOWN_MOODS   = ["warm", "clinical", "cinematic", "lofi"];
-const KNOWN_LIGHT   = ["any", "bright sun", "golden hour", "low light", "night"];
-const KNOWN_WEATHER = ["any", "sunny", "cloudy", "rain", "fog"];
+const COLLECTION = new LensCollection(LENS_DATA);
+const OPTIONS = { ...ENGINE_OPTIONS, subject: [...COLLECTION.uiSubjects, "🎲 Wild"] };
 
-class Lens {
-  constructor(data) {
-    Object.assign(this, data);
-    this._validate();
-  }
-
-  get maxAperture() {
-    return parseFloat(this.aperture.replace("f/", ""));
-  }
-
-  matchesSubject(query) {
-    const q = query.toLowerCase();
-    return this.subjects.some(s => s.includes(q) || q.includes(s));
-  }
-
-  matchesMood(moodTag) {
-    return (this.moods || []).includes(moodTag.toLowerCase());
-  }
-
-  matchesLight(lightTag) {
-    const tags = this.light || ["any"];
-    if (tags.includes("any")) return true;
-    const t = lightTag.toLowerCase();
-    return tags.some(l => l.includes(t) || t.includes(l));
-  }
-
-  matchesWeather(weatherTag) {
-    const tags = this.weather || ["any"];
-    if (tags.includes("any")) return true;
-    const t = weatherTag.toLowerCase();
-    return tags.some(w => w.includes(t) || t.includes(w));
-  }
-
-  _validate() {
-    const warn = (msg) => console.warn(`[Lens "${this.name}"] ${msg}`);
-    ["shortName","name","aperture","type","origin","era","rarity","character","tip","subjects"]
-      .forEach(f => { if (!this[f]) warn(`Missing required field: ${f}`); });
-    if (isNaN(this.maxAperture)) warn(`aperture "${this.aperture}" couldn't be parsed`);
-    if (this.rarity < 1 || this.rarity > 5) warn(`rarity should be 1–5, got ${this.rarity}`);
-    (this.moods || []).forEach(m => {
-      if (!KNOWN_MOODS.includes(m))
-        warn(`Unknown mood tag "${m}" — known: ${KNOWN_MOODS.join(", ")}`);
-    });
-  }
-
-  describe() {
-    return `${this.name} (${this.aperture}) — ${this.origin}, ${this.era} | `
-         + `subjects: [${this.subjects.join(", ")}] moods: [${(this.moods||[]).join(", ")}]`;
-  }
-}
-
-
-// ════════════════════════════════════════════════════════════════════
-//  LENS COLLECTION
-// ════════════════════════════════════════════════════════════════════
-class LensCollection {
-  static HIDDEN_SUBJECTS = new Set(["portrait","travel","event","experimental","creative","lowlight","indoor"]);
-
-  constructor(lenses) {
-    this.lenses = lenses.map((l, i) => { l.id = i + 1; return l; });
-  }
-
-  get count()  { return this.lenses.length; }
-  getById(id)  { return this.lenses.find(l => l.id === id); }
-  random()     { return this.lenses[Math.floor(Math.random() * this.lenses.length)]; }
-
-  // Derived live from the collection — add a subject tag to any Lens
-  // and the pill appears in the UI automatically
-  get uiSubjects() {
-    return [...new Set(this.lenses.flatMap(l => l.subjects))]
-      .filter(s => !LensCollection.HIDDEN_SUBJECTS.has(s))
-      .sort()
-      .map(s => s.charAt(0).toUpperCase() + s.slice(1));
-  }
-}
-
-
-// ════════════════════════════════════════════════════════════════════
-//  SCORING ENGINE
-//  Pure algorithm — no lens IDs hardcoded, no UI concerns.
-//  Tune WEIGHTS to adjust how much each condition influences picks.
-// ════════════════════════════════════════════════════════════════════
-class ScoringEngine {
-  static WEIGHTS = {
-    subject:         4,    // subject tag match
-    mood:            1.5,  // mood nudge — intentionally subtle
-    moodChaos:       3,    // extra random when "Chaotic" mood chosen
-    lightGeneral:    2,    // general light condition match
-    lowLightFast:    4,    // aperture ≤f/1.8 in low light
-    lowLightMid:     2,    // aperture ≤f/2.2 in low light
-    astroFast:       7,    // astrophotography score at f/1.4
-    astroStep:       2,    // score drops this much per stop above f/1.4
-    astroPenalty:   -2,    // floor penalty for slow lenses in astro
-    weather:         1.5,  // weather tag match
-    locationIndoor:  2,    // indoor lens bonus when Indoor selected
-    locationOutdoor: 1,    // outdoor lens bonus when Outdoor selected
-    chaos:           2.5,  // max random float — always added to every lens
-    wildProb:        0.28, // chance of picking from top-N instead of top-1
-    wildN:           4,    // pool size for wild picks
-  };
-
-  static score(lens, cond) {
-    const W = ScoringEngine.WEIGHTS;
-    let s = 0;
-
-    if (cond.subject && lens.matchesSubject(cond.subject)) s += W.subject;
-
-    if (cond.mood) {
-      if (cond.mood.includes("Warm")     && lens.matchesMood("warm"))      s += W.mood;
-      if (cond.mood.includes("Clinical") && lens.matchesMood("clinical"))  s += W.mood;
-      if (cond.mood.includes("Cinematic")&& lens.matchesMood("cinematic")) s += W.mood;
-      if (cond.mood.includes("Lofi")     && lens.matchesMood("lofi"))      s += W.mood * 2; // stronger nudge — lofi is a niche pick
-      if (cond.mood.includes("Chaotic"))  s += Math.random() * W.moodChaos;
-    }
-
-    if (cond.light) {
-      const lk = cond.light.toLowerCase();
-      if (lk.includes("astro")) {
-        const stops = (lens.maxAperture - 1.4) / 0.5;
-        s += Math.max(W.astroPenalty, W.astroFast - stops * W.astroStep);
-      } else if (lk.includes("low light")) {
-        if (lens.maxAperture <= 1.8) s += W.lowLightFast;
-        if (lens.maxAperture <= 2.2) s += W.lowLightMid;
-      } else {
-        if (lens.matchesLight(lk)) s += W.lightGeneral;
-      }
-    }
-
-    if (cond.weather) {
-      // Strip leading emoji token (e.g. "☀ Sunny" → "sunny", "🌧 Rain" → "rain")
-      const weatherWord = cond.weather.trim().split(" ").slice(1).join(" ").toLowerCase();
-      s += lens.matchesWeather(weatherWord) ? W.weather : 0;
-    }
-
-    if (cond.location === "Indoor"  && !lens.outdoor) s += W.locationIndoor;
-    if (cond.location === "Outdoor" &&  lens.outdoor) s += W.locationOutdoor;
-
-    s += Math.random() * W.chaos;
-    return s;
-  }
-
-  static pick(collection, cond) {
-    const W      = ScoringEngine.WEIGHTS;
-    const isWild = !Object.values(cond).some(Boolean) || cond.subject === "🎲 Wild";
-    if (isWild) return { lens: collection.random(), wild: true };
-
-    const ranked = collection.lenses
-      .map(lens => ({ lens, score: ScoringEngine.score(lens, cond) }))
-      .sort((a, b) => b.score - a.score);
-
-    const goWild = Math.random() < W.wildProb;
-    const idx    = goWild ? Math.floor(Math.random() * Math.min(W.wildN, ranked.length)) : 0;
-    return { lens: ranked[idx].lens, wild: goWild && idx > 0 };
-  }
-}
-
-
-// ════════════════════════════════════════════════════════════════════
-//  YOUR LENS COLLECTION
-//  Add, remove, or edit lenses here. IDs are auto-assigned.
-//  Check the browser console for validation warnings after edits.
-// ════════════════════════════════════════════════════════════════════
-const COLLECTION = new LensCollection([
-
-  new Lens({
-    shortName: "TAKUMAR 50",   name: "Super Takumar 50mm",
-    aperture: "f/1.4",         type: "Prime",
-    origin: "Japanese",        era: "1960s",
-    rarity: 3,                 outdoor: false,
-    character: "Warm, creamy bokeh — radioactive thorium glow",
-    tip: "Thorium coating paints highlights warm amber. Wide open at golden hour for maximum magic.",
-    subjects: ["street", "nature", "landscape"],
-    moods:    ["warm", "lofi"],
-    weather:  ["any"],
-  }),
-
-  new Lens({
-    shortName: "ВЕГА-9  50",   name: "Vega-9 50mm",
-    aperture: "f/2.1",         type: "Cine Prime",
-    origin: "Soviet",          era: "1970s",
-    rarity: 4,                 outdoor: true,
-    character: "Cinematic swirl, stepless aperture, 16mm image circle",
-    tip: "Stepless aperture for smooth exposure pulls. Swirly bokeh is the feature — lean into it.",
-    subjects: ["street", "landscape"],
-    moods:    ["warm", "cinematic", "lofi"],
-    light:    ["any"],
-    weather:  ["any"],
-  }),
-
-  new Lens({
-    shortName: "FLEKTOGON 35", name: "Carl Zeiss Jena Flektogon 35mm",
-    aperture: "f/2.4",         type: "Wide Prime",
-    origin: "East German",     era: "1960s",
-    rarity: 3,                 outdoor: true,
-    character: "Punchy micro-contrast, sharp centre, vintage character",
-    tip: "East German precision. Get close, fill the frame. Made for tight street and environmental shots.",
-    subjects: ["street", "landscape", "nature"],
-    moods:    ["clinical"],
-    light:    ["bright sun", "any"],
-    weather:  ["sunny", "cloudy"],
-  }),
-
-  new Lens({
-    shortName: "VIVITAR 28",   name: "Vivitar 28mm f/2.8",
-    aperture: "f/2.8",         type: "Wide Prime",
-    origin: "Third Party",     era: "1980s",
-    rarity: 2,                 outdoor: true,
-    character: "Multi-coated, punchy contrast, flare-resistant",
-    tip: "Multi-coating keeps flare in check. Go wide, get close, commit to the full frame.",
-    subjects: ["landscape", "street", "nature"],
-    moods:    ["clinical"],
-    light:    ["bright sun"],
-    weather:  ["sunny"],
-  }),
-
-  new Lens({
-    shortName: "TAMRON  28",   name: "Tamron Auto 28mm f/2.8",
-    aperture: "f/2.8",         type: "Wide Prime",
-    origin: "Japanese",        era: "1980s",
-    rarity: 2,                 outdoor: true,
-    character: "Clean wide-angle rendering, reliable and neutral",
-    tip: "Reliable wide-angle for sweeping landscapes. Clean and honest.",
-    subjects: ["landscape", "nature"],
-    moods:    ["clinical"],
-    light:    ["bright sun", "golden hour"],
-    weather:  ["sunny", "cloudy"],
-  }),
-
-  new Lens({
-    shortName: "HEXANON Ø55",  name: "Konica Hexanon 55mm Macro",
-    aperture: "f/3.5",         type: "Macro Prime",
-    origin: "Japanese",        era: "1970s",
-    rarity: 3,                 outdoor: false,
-    character: "Razor-sharp macro, clinical and precise",
-    tip: "Stack extension tubes for max magnification. Betta fish, insects, textures — clinical beauty.",
-    subjects: ["macro", "nature"],
-    moods:    ["clinical"],
-    light:    ["any"],
-    weather:  ["any"],
-  }),
-
-  new Lens({
-    shortName: "NIKKOR  50",   name: "Nikon AI 50mm f/1.8",
-    aperture: "f/1.8",         type: "Prime",
-    origin: "Japanese",        era: "1980s",
-    rarity: 1,                 outdoor: true,
-    character: "Neutral benchmark, clinical sharpness, fast",
-    tip: "The benchmark. Neutral rendering lets your vision lead. When in doubt — reach for this.",
-    subjects: ["street", "landscape", "nature"],
-    moods:    ["clinical"],
-    light:    ["any"],
-    weather:  ["any"],
-  }),
-
-  new Lens({
-    shortName: "TELE   135",   name: "Automatic Telephoto 135mm f/2.8",
-    aperture: "f/2.8",         type: "Tele Prime",
-    origin: "Japanese",        era: "1970s",
-    rarity: 2,                 outdoor: true,
-    character: "Compressed perspective, beautiful subject isolation",
-    tip: "Stand back and let subjects breathe. Background compression flatters everything.",
-    subjects: ["nature", "landscape", "street"],
-    moods:    ["warm", "cinematic"],
-    light:    ["bright sun", "golden hour"],
-    weather:  ["sunny", "cloudy"],
-  }),
-
-  new Lens({
-    shortName: "NIKKOR 36-72", name: "Nikon AI 36–72mm f/3.5-4.5",
-    aperture: "f/3.5",         type: "Standard Zoom",
-    origin: "Japanese",        era: "1980s",
-    rarity: 1,                 outdoor: true,
-    character: "Versatile standard zoom, reliable walk-around",
-    tip: "When you don't know what you'll encounter — this goes on the camera.",
-    subjects: ["street", "landscape", "nature"],
-    moods:    ["clinical"],
-    light:    ["any"],
-    weather:  ["any"],
-  }),
-
-  new Lens({
-    shortName: "KENLOCK 80-200", name: "Kenlock Mctor 80–200mm f/4.5",
-    aperture: "f/4.5",         type: "Tele Zoom",
-    origin: "Multi-coated",    era: "1980s",
-    rarity: 2,                 outdoor: true,
-    character: "Long reach, compressed backgrounds",
-    tip: "Reach out from afar. Birds, distant coastlines, candid street — tele compression magic.",
-    subjects: ["nature", "landscape"],
-    moods:    ["cinematic"],
-    light:    ["bright sun", "golden hour"],
-    weather:  ["sunny", "cloudy"],
-  }),
-
-  new Lens({
-    shortName: "TOKINA 28-70",  name: "Tokina 28–70mm f/3.5-4.5",
-    aperture: "f/3.5",          type: "Standard Zoom",
-    origin: "Japanese",         era: "1980s",
-    rarity: 1,                  outdoor: true,
-    character: "Flexible general-purpose zoom range",
-    tip: "Flexible range for unpredictable shoots. Great when you have no idea what you'll find.",
-    subjects: ["street", "landscape", "nature"],
-    moods:    ["clinical"],
-    light:    ["any"],
-    weather:  ["any"],
-  }),
-
-  new Lens({
-    shortName: "TOKINA  500",  name: "Tokina RMC 500mm",
-    aperture: "f/8",           type: "Super Telephoto",
-    origin: "Japanese",        era: "1970s",
-    rarity: 4,                 outdoor: true,
-    character: "Mirror catadioptric, fixed f/8, donut bokeh — 800mm equiv on APS-C",
-    tip: "Fixed f/8 — all exposure via shutter and ISO. Pair with your 20-stop ND for solar photography. Donut bokeh on highlights is the signature; embrace it. Tripod mandatory at 800mm equiv.",
-    subjects: ["nature", "landscape"],
-    moods:    ["cinematic"],
-    light:    ["bright sun", "golden hour"],
-    weather:  ["sunny", "cloudy"],
-  }),
-
-  new Lens({
-    shortName: "INDUSTAR 28",  name: "Industar-69 28mm f/2.8",
-    aperture: "f/2.8",         type: "Wide Prime",
-    origin: "Soviet",          era: "1960s",
-    rarity: 3,                 outdoor: true,
-    character: "Ultra-compact Soviet pancake, Tessar-type, swirly bokeh, heavy vignette — lo-fi analog soul",
-    tip: "Smallest lens in the collection. Set hyperfocal at f/8 and shoot. Embrace the soft corners and vignette — that's the BeLOMO character. Perfect for street and black-and-white.",
-    subjects: ["street", "landscape"],
-    moods:    ["warm", "lofi"],
-    light:    ["any"],
-    weather:  ["any"],
-  }),
-
-  new Lens({
-    shortName: "TOKINA 90-230", name: "Tokina Auto Tele-Zoom 90–230mm",
-    aperture: "f/4.5",          type: "Tele Zoom",
-    origin: "Japanese",         era: "1973",
-    rarity: 5,                  outdoor: true,
-    character: "Full metal, amber-coated — 1973 first production, ultra-rare",
-    tip: "1973 first production. Amber coating paints light like honey. This is artwork — treat it with reverence.",
-    subjects: ["nature", "landscape"],
-    moods:    ["warm"],
-    light:    ["bright sun", "golden hour"],
-    weather:  ["sunny"],
-  }),
-
-]);
-
-
-// ════════════════════════════════════════════════════════════════════
-//  UI OPTIONS
-//  subject is derived live from the collection.
-//  Add a new subject tag to any Lens → pill auto-appears.
-// ════════════════════════════════════════════════════════════════════
-const OPTIONS = {
-  subject:  [...COLLECTION.uiSubjects, "🎲 Wild"],
-  light:    ["Bright Sun", "Golden Hour", "Low Light / Night", "Astrophotography"],
-  location: ["Outdoor", "Indoor"],
-  mood:     ["Warm & Organic", "Clinical & Sharp", "Cinematic", "Lofi & Grain", "Chaotic & Wild"],
-  weather:  ["☀ Sunny", "☁ Cloudy", "🌧 Rain", "🌫 Fog"],
-};
-
-
-// ════════════════════════════════════════════════════════════════════
-//  APP COMPONENT
-// ════════════════════════════════════════════════════════════════════
 export default function LensRoulette() {
   const [cond, setCond]     = useState({});
   const [spin, setSpin]     = useState(false);
   const [disp, setDisp]     = useState({ name: "── ──── ──", ap: "f/──", origin: "────" });
   const [result, setResult] = useState(null);
   const [wild,   setWild]   = useState(false);
+  const [why,    setWhy]    = useState(null);
   const timers = useRef([]);
 
   const activeCount = Object.values(cond).filter(Boolean).length;
+  const reasons = buildReasons(why);
 
   function clearTimers() { timers.current.forEach(clearInterval); timers.current = []; }
 
@@ -410,8 +24,9 @@ export default function LensRoulette() {
     clearTimers();
     setSpin(true);
     setResult(null);
+    setWhy(null);
 
-    const { lens: chosen, wild: isWild } = ScoringEngine.pick(COLLECTION, cond);
+    const { lens: chosen, wild: isWild, breakdown } = ScoringEngine.pick(COLLECTION, cond);
 
     const phases = [[55,14],[100,9],[170,6],[280,4],[450,3]];
     let pi = 0;
@@ -419,7 +34,7 @@ export default function LensRoulette() {
     function next() {
       if (pi >= phases.length) {
         setDisp({ name: chosen.shortName, ap: chosen.aperture, origin: chosen.origin.toUpperCase() });
-        setTimeout(() => { setSpin(false); setWild(isWild); setResult(chosen); }, 350);
+        setTimeout(() => { setSpin(false); setWild(isWild); setResult(chosen); setWhy(breakdown); }, 350);
         return;
       }
       let count = 0;
@@ -437,6 +52,50 @@ export default function LensRoulette() {
   function toggle(key, val) {
     setCond(p => ({ ...p, [key]: p[key] === val ? undefined : val }));
     setResult(null);
+    setWhy(null);
+  }
+
+  function formatFocal(lens) {
+    if (!lens?.focalLength) return "--";
+    const { min, max } = lens.focalLength;
+    if (min == null || max == null) return "--";
+    return min === max ? `${min}mm` : `${min}-${max}mm`;
+  }
+
+  function formatMinFocus(lens) {
+    return typeof lens?.minFocus === "number" ? `${lens.minFocus}m` : "--";
+  }
+
+  function formatWeight(lens) {
+    return typeof lens?.weight === "number" ? `${lens.weight}g` : "--";
+  }
+
+  function formatScore(value) {
+    if (typeof value !== "number") return "";
+    const v = Math.round(value * 10) / 10;
+    return v >= 0 ? `+${v}` : `${v}`;
+  }
+
+  function buildReasons(breakdown) {
+    if (!breakdown) return [];
+    const rows = [
+      { key: "subject",   label: "SUBJECT" },
+      { key: "light",     label: "LIGHT" },
+      { key: "mood",      label: "MOOD" },
+      { key: "location",  label: "LOCATION" },
+      { key: "weather",   label: "WEATHER" },
+      { key: "bokeh",     label: "BOKEH" },
+      { key: "traits",    label: "TRAITS" },
+      { key: "randomness",label: "RANDOMNESS" },
+    ];
+    return rows
+      .map(r => ({ ...r, data: breakdown[r.key] }))
+      .filter(r => r.data && r.data.score)
+      .map(r => ({
+        label: r.label,
+        score: r.data.score,
+        detail: (r.data.detail || []).join(", "),
+      }));
   }
 
   return (
@@ -589,6 +248,37 @@ export default function LensRoulette() {
 
           <div style={{ fontSize:9, letterSpacing:4, color:"#333", marginBottom:7 }}>SHOOTING TIP</div>
           <div style={{ fontSize:11, color:"#787060", lineHeight:1.8, marginBottom:20 }}>{result.tip}</div>
+
+          <div style={{ fontSize:9, letterSpacing:4, color:"#333", marginBottom:7 }}>WHY THIS LENS</div>
+          <div style={{ fontSize:11, color:"#8e876f", lineHeight:1.7, marginBottom:18 }}>
+            {wild && <div style={{ marginBottom:6 }}>Pure random wild pick — conditions ignored.</div>}
+            {reasons.length === 0 && !wild && (
+              <div>No matching conditions — random selection applied.</div>
+            )}
+            {reasons.map(r => (
+              <div key={r.label} style={{ display:"flex", gap:8 }}>
+                <div style={{ minWidth:84, color:"#6f6a58", letterSpacing:2 }}>{r.label}</div>
+                <div style={{ color:"#c8a96e" }}>{formatScore(r.score)}</div>
+                <div style={{ color:"#7e7762" }}>{r.detail || "match"}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display:"flex", flexWrap:"wrap", gap:12, marginBottom:18 }}>
+            {[
+              ["FOCAL", formatFocal(result)],
+              ["MIN FOCUS", formatMinFocus(result)],
+              ["WEIGHT", formatWeight(result)],
+              ["CONTRAST", (result.contrast || "--").toUpperCase()],
+              ["FLARE", (result.flare || "--").toUpperCase()],
+              ["BOKEH", (result.bokeh || "--").toUpperCase()],
+            ].map(([label, val]) => (
+              <div key={label} style={{ minWidth:90 }}>
+                <div style={{ fontSize:9, letterSpacing:3, color:"#333", marginBottom:4 }}>{label}</div>
+                <div style={{ fontSize:11, color:"#c8a96e", letterSpacing:1 }}>{val}</div>
+              </div>
+            ))}
+          </div>
 
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
             <div>

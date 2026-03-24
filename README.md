@@ -1,89 +1,56 @@
-# 📷 Lens Roulette
+# Lens Roulette
 
-A guided + random lens picker for your vintage glass collection. Built with React + Vite.
+Lens Roulette is a React + Vite application for selecting a vintage lens based on creative and technical shooting conditions.
 
-## Local Development
+The current engine uses an OOP Organic Scoring System (OS): each criterion (subject, mood, light, weather, focal class, focus behavior, etc.) is scored individually and then cross-influences other criteria to produce coherent picks.
+
+## Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
-Open http://localhost:5173
 
----
+Open: `http://localhost:5173`
 
-## Deploy to Vercel (recommended)
-
-### Option A — Vercel CLI (fastest)
+Build production bundle:
 
 ```bash
-npm install -g vercel
-vercel
-```
-Follow the prompts — Vercel auto-detects Vite. You'll get a live URL immediately.
-
-### Option B — via GitHub (best for ongoing updates)
-
-```bash
-git init
-git add .
-git commit -m "initial commit"
-git remote add origin https://github.com/YOUR_USERNAME/lens-roulette.git
-git push -u origin main
+npm run build
+npm run preview
 ```
 
-Then go to vercel.com → Add New Project → import the repo → Deploy.
-Every `git push` to `main` auto-deploys.
+## Documentation Map
 
----
+- [Project Documentation](./docs/PROJECT_DOCUMENTATION.md)
+  Complete guide: architecture, data flow, UI behavior, runtime model, and maintenance workflow.
+- [Scoring OS Reference](./docs/SCORING_REFERENCE.md)
+  Detailed explanation of the Organic Scoring System internals, scoring phases, and criterion interactions.
+- [Lens Schema Reference](./docs/LENS_SCHEMA_REFERENCE.md)
+  Full field reference for `LENS_DATA`, derived optical fields from `lensUtils`, and data authoring rules.
 
-## Deploy to GitHub Pages (alternative)
+## Project Structure
 
-```bash
-npm install --save-dev gh-pages
+```text
+src/
+  App.jsx                UI and interaction flow
+  main.jsx               React entrypoint
+  data/
+    lenses.js            Canonical lens inventory (stored fields)
+    lensUtils.js         Derived optical calculations
+    lenses_OLD.js        Legacy dataset snapshot
+  engine/
+    index.js             OOP domain model + Organic Scoring System
 ```
 
-Add to `package.json` scripts:
-```json
-"predeploy": "npm run build",
-"deploy": "gh-pages -d dist"
-```
+## NPM Scripts
 
-Add `base: '/lens-roulette/'` to `vite.config.js`, then:
-```bash
-npm run deploy
-```
+- `npm run dev` - Run local development server.
+- `npm run build` - Build production bundle.
+- `npm run preview` - Serve built output locally.
 
----
+## Notes
 
-## Adding a Lens
-
-Add a new `Lens` object to the `COLLECTION` array in `src/App.jsx`:
-
-```js
-new Lens({
-  shortName: "LABEL  XX",     // shown on the slot reel (≤12 chars)
-  name:      "Full Lens Name",
-  aperture:  "f/1.8",
-  type:      "Prime",         // Prime | Zoom | Macro | Cine Prime | Tele Prime | Tele Zoom
-  origin:    "Japanese",      // Japanese | Soviet | East German | Third Party
-  era:       "1970s",
-  rarity:    3,               // 1–5
-  outdoor:   true,
-  character: "One-line optical personality",
-  tip:       "Shooting tip shown on result card.",
-  subjects:  ["street", "landscape"],  // street | landscape | macro | nature
-  moods:     ["warm"],                 // warm | clinical | cinematic | lofi
-  light:     ["any"],                  // any | bright sun | golden hour | low light | night
-  weather:   ["any"],                  // any | sunny | cloudy | rain | fog
-}),
-```
-
-New subject tags auto-appear as pills — no other changes needed.
-
----
-
-## Tuning the Algorithm
-
-All weights live in `ScoringEngine.WEIGHTS` at the top of `src/App.jsx`.
-Raise `chaos` (default 2.5) for more randomness. Lower `wildProb` (default 0.28) for more deterministic picks.
+- Lens additions should be made in `src/data/lenses.js`.
+- Do not duplicate derived fields in `lenses.js`; they are computed via `deriveLens()` in `src/data/lensUtils.js`.
+- `src/data/lenses_OLD.js` is kept as historical reference and is not used by the runtime engine.
